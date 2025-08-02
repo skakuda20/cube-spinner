@@ -24,6 +24,9 @@ class point3D:
             self.y - other.y,
             self.z - other.z
         )
+    
+    def __str__(self):
+        return f"Point({self.x}, {self.y}, {self.z})"
 
 class Cube:
     def __init__(self):
@@ -120,11 +123,13 @@ def rotate_point_by_quaternion(point, q):
 def world_to_camera_point(point, camera):
     relative_point = point - camera.position
     p = Quaternion(0, relative_point.x, relative_point.y, relative_point.z)
-    camera_space_point = rotate_point_by_quaternion(p, quaternion_conjugate(camera.orientation))
-    return camera_space_point
+
+    # camera_space_point = rotate_point_by_quaternion(p, quaternion_conjugate(camera.orientation))
+    camera_space_q = quaternion_multiply(p, quaternion_conjugate(camera.orientation))
+    return point3D(camera_space_q.x, camera_space_q.y, camera_space_q.z)
 
 
-def project_point(point, camera_distance, width, height, scale=1):
+def project_point(point, camera_distance, width, height, scale=6):
     # Apply prespective projection
     factor = scale / (point.z + camera_distance)
     x2d = point.x * factor
@@ -132,13 +137,14 @@ def project_point(point, camera_distance, width, height, scale=1):
 
     # Convert to screen coordinates
     screen_x = int(width / 2 + x2d)
-    screen_y = int(height / 2 + y2d)
+    screen_y = int(height / 2 - y2d)
 
     return (screen_x, screen_y)
 
 
 def draw_scene(points, camera, frame):
     height, width = frame.shape
+    frame.fill(0)
     for point in points:
         camera_point = world_to_camera_point(point3D(point[0], point[1], point[2]), camera)
         x, y = project_point(camera_point, camera.focal_len, width, height)
@@ -156,19 +162,20 @@ def dev_testing():
 
     frame = np.zeros((height, width), dtype=np.uint8)
 
-    camera_distance = 5
-    camera = Camera(point3D(0, 0, -camera_distance), Quaternion(0, 0, 0, 0), camera_distance)
+    camera_distance = 2
+    camera = Camera(point3D(0, 0, -camera_distance), Quaternion(1, 0, 0, 0), camera_distance)
 
     draw_scene(cube.vertices, camera, frame)
 
 
     # Test with rotation around z-axis
     axis = [0, 0, 1]
-    angle = np.pi / 2  # 90 degrees
+    angle = np.pi / 4  # 45 degrees
     
-    for vertex in cube.vertices:
+    for i, vertex in enumerate(cube.vertices):
         rotated = rotate_point(vertex, angle, axis)
         print(f"{vertex} --> {rotated}")
+        cube.vertices[i] = rotated
 
     draw_scene(cube.vertices, camera, frame)
 
