@@ -132,6 +132,11 @@ def world_to_camera_point(point, camera):
 def project_point(point, camera_distance, width, height, scale=6):
     # Apply prespective projection
     factor = scale / (point.z + camera_distance)
+
+    z = point.z + camera_distance
+    if z <= 0:
+        return None
+
     x2d = point.x * factor
     y2d = point.y * factor
 
@@ -140,6 +145,29 @@ def project_point(point, camera_distance, width, height, scale=6):
     screen_y = int(height / 2 - y2d)
 
     return (screen_x, screen_y)
+
+
+
+def draw_line(frame, x0, y0, x1, y1, char):
+    height, width = frame.shape
+
+    dx = x1 - x0
+    dy = y1 - y0
+    steps = max(abs(dx), abs(dy))
+
+    if steps == 0:
+        return
+    
+    x_inc = dx / steps
+    y_inx = dy / steps
+
+    x = x0
+    y = y0
+    for i in range(steps):
+        if x > 0 and x < width and y > 0 and y < height:
+            frame[int(x), int(y)] = char
+        x += x_inc
+        y += y_inc
 
 
 def draw_scene(points, camera, frame):
