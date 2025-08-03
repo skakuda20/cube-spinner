@@ -31,7 +31,7 @@ class point3D:
     def cross(self, other):
         return point3D(
             self.y * other.z - self.z * other.y,
-            self.z * other.x - self.x - other.z,
+            self.z * other.x - self.x * other.z,
             self.x * other.y - self.y * other.x
         )
     
@@ -41,27 +41,25 @@ class point3D:
 class Cube:
     def __init__(self, scale):
         self.vertices = [
-            [ 1, 1, 1],
-            [ 1,-1, 1],
-            [-1,-1, 1],
-            [-1, 1, 1],
-            [ 1, 1,-1],
-            [ 1,-1,-1],
-            [-1,-1,-1],
-            [-1, 1,-1],
+            point3D( 1 * scale,  1 * scale,  1 * scale),  # x, y, z  ➜ x, z, y
+            point3D( 1 * scale,  1 * scale, -1 * scale),
+            point3D(-1 * scale,  1 * scale, -1 * scale),
+            point3D(-1 * scale,  1 * scale,  1 * scale),
+            point3D( 1 * scale, -1 * scale,  1 * scale),
+            point3D( 1 * scale, -1 * scale, -1 * scale),
+            point3D(-1 * scale, -1 * scale, -1 * scale),
+            point3D(-1 * scale, -1 * scale,  1 * scale),
         ]
 
-        for i, v in enumerate(self.vertices):
-            self.vertices[i] = [coord * scale for coord in v]
-
         self.edges = [
-            (0, 1), (0, 2), (0, 4),
-            (1, 3), (1, 5),
-            (2, 3), (2, 6),
-            (3, 7),
-            (4, 5), (4, 6),
-            (5, 7),
-            (6, 7)
+            # Top face (y = +1)
+            (0, 3), (3, 7), (7, 4), (4, 0),
+
+            # Bottom face (y = -1)
+            (1, 2), (2, 6), (6, 5), (5, 1),
+
+            # Vertical sides
+            (0, 1), (3, 2), (7, 6), (4, 5)
         ]
 
         self.faces = [
@@ -91,7 +89,7 @@ class Projection:
         self.width = width
         self.height = height
         self.aspect_ratio = width / height
-        self.frame = np.zeros((height, width, 3), dtype=np.uint8)  # Placeholder for the frame buffer
+        self.frame = np.full((height, width), ' ', dtype='<U1') # Placeholder for the frame buffer
 
     def project(self, point):
         # Placeholder for projection logic
@@ -186,7 +184,7 @@ def quaternion_conjugate(q):
 
 def rotate_point(point, angle, axis):
     q = make_rotation_quaternion(axis, angle)
-    p = Quaternion(0, *point)
+    p = Quaternion(0, point.x, point.y, point.z)
     q_conj = quaternion_conjugate(q)
 
     # Rotate point using quaternion multiplication
@@ -196,6 +194,9 @@ def rotate_point(point, angle, axis):
 
 def make_rotation_quaternion(axis, angle):
     x, y, z = axis
+    axis_norm = np.sqrt(x**2 + y**2 + z**2)
+    if axis_norm == 0:
+        raise ValueError("Rotation axis cannot be zero vector")
     s = np.sin(angle / 2)   # amount of imaginary part
     w = np.cos(angle / 2)   # scalar part
 
@@ -220,24 +221,27 @@ def world_to_camera_point(point, camera):
 
 def project_point(point, camera_distance, width, height, scale=6):
     # Apply prespective projection
-    factor = scale / (point.z + camera_distance)
-
-    z = point.z + camera_distance
-    if z <= 0:
+    factor = scale / (point.y + camera_distance)
+    y_depth = point.y + camera_distance
+    if y_depth <= 0:
         return None
-
     x2d = point.x * factor
-    y2d = point.y * factor
-
-    # Convert to screen coordinates
+    z2d = point.z * factor
     screen_x = int(width / 2 + x2d)
-    screen_y = int(height / 2 - y2d)
+    screen_y = int(height / 2 - z2d)
 
     return (screen_x, screen_y)
 
 
+def get_shade(z, zmin, zmax, shading_chars):
+    # Clamp and normalize z to [0, 1]
+    z = max(min(z, zmax), zmin)
+    t = (z - zmin) / (zmax - zmin) if zmax > zmin else 0
+    idx = int(t * (len(shading_chars) - 1))
+    return shading_chars[idx]
 
-def draw_line(frame, x0, y0, x1, y1, char):
+
+def draw_line(frame, x0, y0, x1, y1, z0, z1, zmin, zmax, shading_chars):
     height, width = frame.shape
 
     dx = x1 - x0
@@ -246,6 +250,9 @@ def draw_line(frame, x0, y0, x1, y1, char):
 
     if steps == 0:
         if 0 <= int(x0) < width and 0 <= int(y0) < height:
+            t = i / steps if steps > 0 else 0
+            z = z0 + t * (z1 - z0)
+            char = get_shade(z, zmin, zmax, shading_chars)
             frame[int(y0), int(x0)] = char
         return
 
@@ -256,48 +263,61 @@ def draw_line(frame, x0, y0, x1, y1, char):
     y = y0
     for i in range(steps + 1):  # include endpoint
         xi, yi = int(round(x)), int(round(y))
+
+        t = i / steps if steps > 0 else 0
+        z = z0 + t * (z1 - z0)
+        char = get_shade(z, zmin, zmax, shading_chars)
+
         if 0 <= xi < width and 0 <= yi < height:
             frame[yi, xi] = char
         x += x_inc
         y += y_inc
 
 
+def render_frame(frame):
+    """Render the frame as ASCII art to the terminal."""
+    for row in frame:
+        print(''.join(row))
+
+
 def draw_scene(points, edges, camera, frame):
     height, width = frame.shape
-    frame.fill(0)
+    frame.fill(' ')
 
-    projected_vertices = []
-
-    for point in points:
-        camera_point = world_to_camera_point(point3D(point[0], point[1], point[2]), camera)
-        result = project_point(camera_point, camera.focal_len, width, height)
-        projected_vertices.append(result)
+    camera_points = [world_to_camera_point(p, camera) for p in points]
+    projected_vertices = [project_point(cp, camera.focal_len, width, height) for cp in camera_points]
+    z_values = [cp.z for cp in camera_points]
+    zmin, zmax = min(z_values), max(z_values)
 
     for edge in edges:
         start, end = edge
-
         p0 = projected_vertices[start]
         p1 = projected_vertices[end]
+        z0 = camera_points[start].z
+        z1 = camera_points[end].z
 
         if p0 is not None and p1 is not None:
             x0, y0 = p0
             x1, y1 = p1
-            draw_line(frame, x0, y0, x1, y1, 1)
+            draw_line(frame, x0, y0, x1, y1, z0, z1, zmin, zmax, shading_chars)
 
-    print(frame)
+    render_frame(frame)
 
 
 def dev_testing():
-    cube = Cube(2)
+    cube = Cube(3)
+    # cube = Cube(2.3)
 
     # projection = Projection()
-    height = 21
-    width = 21
+    height = 71
+    width = 91
 
-    frame = np.zeros((height, width), dtype=np.uint8)
+    frame = np.full((height, width), ' ', dtype='<U1')
 
-    camera_distance = 2
-    camera_position = point3D(2, 2, -camera_distance)
+    camera_distance = 2.5
+    camera_position = point3D(2, -3, 2)
+    # camera_position = point3D(1, -camera_distance, 0)
+    # camera_position = point3D(1, 0, -camera_distance)
     target_position = point3D(0, 0, 0)  # The point to look at (cube center)
     up_vector = point3D(0, 1, 0)        # World up direction
 
@@ -308,18 +328,18 @@ def dev_testing():
 
 
     # Test with rotation around z-axis
-    axis = [0, 0, 1]
-    angle = np.pi / 12
+    # axis = [0, np.sqrt(2) / 2, np.sqrt(2) / 2]
+    axis = [1, 1, 1]
+    axis = (np.array(axis) / np.linalg.norm(axis)).tolist()  # Normalize
+    angle = np.pi / 240
     
     while True:
         os.system('cls' if os.name == 'nt' else 'clear')
         for i, vertex in enumerate(cube.vertices):
-            rotated = rotate_point(vertex, angle, axis)
-            # print(f"{vertex} --> {rotated}")
-            cube.vertices[i] = rotated
+            cube.vertices[i] = point3D(*rotate_point(vertex, angle, axis))
 
         draw_scene(cube.vertices, cube.edges, camera, frame)
-        time.sleep(0.1)
+        time.sleep(0.01)
 
 
 def main():
