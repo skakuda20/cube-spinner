@@ -1,6 +1,9 @@
+import os
+import time
 import yaml
 import numpy as np
 
+shading_chars = [' ', '.', ':', '-', '=', '+', '*', '#', '%', '@']
 
 class Quaternion:
     def __init__(self, w, x, y, z):
@@ -25,11 +28,18 @@ class point3D:
             self.z - other.z
         )
     
+    def cross(self, other):
+        return point3D(
+            self.y * other.z - self.z * other.y,
+            self.z * other.x - self.x - other.z,
+            self.x * other.y - self.y * other.x
+        )
+    
     def __str__(self):
         return f"Point({self.x}, {self.y}, {self.z})"
 
 class Cube:
-    def __init__(self):
+    def __init__(self, scale):
         self.vertices = [
             [ 1, 1, 1],
             [ 1,-1, 1],
@@ -39,6 +49,28 @@ class Cube:
             [ 1,-1,-1],
             [-1,-1,-1],
             [-1, 1,-1],
+        ]
+
+        for i, v in enumerate(self.vertices):
+            self.vertices[i] = [coord * scale for coord in v]
+
+        self.edges = [
+            (0, 1), (0, 2), (0, 4),
+            (1, 3), (1, 5),
+            (2, 3), (2, 6),
+            (3, 7),
+            (4, 5), (4, 6),
+            (5, 7),
+            (6, 7)
+        ]
+
+        self.faces = [
+            [0, 1, 3, 2],  # front
+            [4, 5, 7, 6],  # back
+            [0, 1, 5, 4],  # bottom
+            [2, 3, 7, 6],  # top
+            [0, 2, 6, 4],  # left
+            [1, 3, 7, 5],  # right
         ]
 
         self.center = [0, 0, 0]
@@ -66,9 +98,66 @@ class Projection:
         pass
 
 
+def normalize(vector):
+    magnitude = np.sqrt(vector.x**2 + vector.y**2 + vector.z**2)
+    if magnitude == 0:
+        raise ValueError("Cannot normalize a zero-length vector")
+    return point3D(vector.x / magnitude, vector.y / magnitude, vector.z / magnitude)
+
+
+def look_at(camera_position, target_position, up_vector):
+    forward = normalize(target_position - camera_position)
+    right = normalize(up_vector.cross(forward))
+
+    # Create 3x3 rotation matrix from right, up and forward vectors
+    rotation_matrix = [
+        [right.x, right.y, right.z],
+        [up_vector.x, up_vector.y, up_vector.z],
+        [forward.x, forward.y, forward.z]
+    ]
+
+    # Convert rotation matrix to quaternion
+    quaternion = rotation_matrix_to_quaternion(rotation_matrix)
+    return quaternion
+
+
 def euclidian_distance(point1, point2):
     return np.sqrt((point2.x-point1.x)**2 + (point2.y-point1.y)**2 + (point2.z-point1.z)**2)
 
+
+def rotation_matrix_to_quaternion(R):
+    r00, r01, r02 = R[0]
+    r10, r11, r12 = R[1]
+    r20, r21, r22 = R[2]
+    
+    tr = r00 + r11 + r22
+
+    if tr > 0:
+        S = np.sqrt(tr + 1.0) * 2
+        w = 0.25 * S
+        x = (r21 - r12) / S
+        y = (r02 - r20) / S
+        z = (r10 - r01) / S
+    elif r00 > r11 and r00 > r22:
+        S = np.sqrt(1.0 + r00 - r11 - r22) * 2
+        w = (r21 - r12) / S
+        x = 0.25 * S
+        y = (r01 + r10) / S
+        z = (r02 + r20) / S
+    elif r11 > r22:
+        S = np.sqrt(1.0 + r11 - r00 - r22) * 2
+        w = (r02 - r20) / S
+        x = (r01 + r10) / S
+        y = 0.25 * S
+        z = (r12 + r21) / S
+    else:
+        S = np.sqrt(1.0 + r22 - r00 - r11) * 2
+        w = (r10 - r01) / S
+        x = (r02 + r20) / S
+        y = (r12 + r21) / S
+        z = 0.25 * S
+
+    return Quaternion(w, x, y, z)
 
 def quaternion_multiply(q1, q2):
     # Extract components from quaternions
@@ -156,56 +245,81 @@ def draw_line(frame, x0, y0, x1, y1, char):
     steps = max(abs(dx), abs(dy))
 
     if steps == 0:
+        if 0 <= int(x0) < width and 0 <= int(y0) < height:
+            frame[int(y0), int(x0)] = char
         return
-    
+
     x_inc = dx / steps
-    y_inx = dy / steps
+    y_inc = dy / steps
 
     x = x0
     y = y0
-    for i in range(steps):
-        if x > 0 and x < width and y > 0 and y < height:
-            frame[int(x), int(y)] = char
+    for i in range(steps + 1):  # include endpoint
+        xi, yi = int(round(x)), int(round(y))
+        if 0 <= xi < width and 0 <= yi < height:
+            frame[yi, xi] = char
         x += x_inc
         y += y_inc
 
 
-def draw_scene(points, camera, frame):
+def draw_scene(points, edges, camera, frame):
     height, width = frame.shape
     frame.fill(0)
+
+    projected_vertices = []
+
     for point in points:
         camera_point = world_to_camera_point(point3D(point[0], point[1], point[2]), camera)
-        x, y = project_point(camera_point, camera.focal_len, width, height)
-        frame[y, x] = 1
-    
+        result = project_point(camera_point, camera.focal_len, width, height)
+        projected_vertices.append(result)
+
+    for edge in edges:
+        start, end = edge
+
+        p0 = projected_vertices[start]
+        p1 = projected_vertices[end]
+
+        if p0 is not None and p1 is not None:
+            x0, y0 = p0
+            x1, y1 = p1
+            draw_line(frame, x0, y0, x1, y1, 1)
+
     print(frame)
 
 
 def dev_testing():
-    cube = Cube()
+    cube = Cube(2)
 
     # projection = Projection()
-    height = 15
-    width = 15
+    height = 21
+    width = 21
 
     frame = np.zeros((height, width), dtype=np.uint8)
 
     camera_distance = 2
-    camera = Camera(point3D(0, 0, -camera_distance), Quaternion(1, 0, 0, 0), camera_distance)
+    camera_position = point3D(2, 2, -camera_distance)
+    target_position = point3D(0, 0, 0)  # The point to look at (cube center)
+    up_vector = point3D(0, 1, 0)        # World up direction
 
-    draw_scene(cube.vertices, camera, frame)
+    orientation = look_at(camera_position, target_position, up_vector)
+    camera = Camera(camera_position, orientation, camera_distance)
+
+    draw_scene(cube.vertices, cube.edges, camera, frame)
 
 
     # Test with rotation around z-axis
     axis = [0, 0, 1]
-    angle = np.pi / 4  # 45 degrees
+    angle = np.pi / 12
     
-    for i, vertex in enumerate(cube.vertices):
-        rotated = rotate_point(vertex, angle, axis)
-        print(f"{vertex} --> {rotated}")
-        cube.vertices[i] = rotated
+    while True:
+        os.system('cls' if os.name == 'nt' else 'clear')
+        for i, vertex in enumerate(cube.vertices):
+            rotated = rotate_point(vertex, angle, axis)
+            # print(f"{vertex} --> {rotated}")
+            cube.vertices[i] = rotated
 
-    draw_scene(cube.vertices, camera, frame)
+        draw_scene(cube.vertices, cube.edges, camera, frame)
+        time.sleep(0.1)
 
 
 def main():
